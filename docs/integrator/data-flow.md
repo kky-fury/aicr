@@ -45,6 +45,11 @@ Each stage transforms input data into a different format:
 - **oke-legacy-plugin**: OKE's legacy addon-manager `nvidia-gpu-device-plugin`
   DaemonSet in `kube-system` (device-plugin conflict evidence: `none`,
   `active`, or `unknown`)
+- **default-storage-class**: StorageClasses annotated as the cluster default
+  (`present`, `multiple`, `absent`, or `unknown`; no provisioner health)
+- **percona-server-mongodb**: Percona Operator for MongoDB conflict evidence
+  (`absent`, `api-detected`, `aicr-owned`, `operator-detected`,
+  `crs-detected`, or `unknown`; not database availability or health)
 - **aks-gpu-pools**: Orchestration-layer projection, not a collector —
   produced from the explicit operator-supplied pool dump passed to
   `aicr snapshot --aks-gpu-pools <file>` (per-pool `gpu-driver` install
@@ -57,9 +62,9 @@ Each stage transforms input data into a different format:
   (Job mode)
 - **oke-addons**: Orchestration-layer projection, not a collector —
   produced from the explicit operator-supplied add-on dump passed to
-  `aicr snapshot --oke-addons <file>` (the `NvidiaGpuPlugin` add-on's
-  control-plane state). Same up-front validation and attach/merge flow
-  as `aks-gpu-pools`
+  `aicr snapshot --oke-addons <file>` (the control-plane state of the
+  `NvidiaGpuPlugin` and `NvidiaNetworkOperator` add-ons). Same up-front
+  validation and attach/merge flow as `aks-gpu-pools`
 - **gke-gpu-pools**: Orchestration-layer projection, not a collector.
   Produced from the explicit operator-supplied pool dump passed to
   `aicr snapshot --gke-gpu-pools <file>` (per-pool
@@ -94,6 +99,8 @@ Each stage transforms input data into a different format:
 │   │   └─ subtypes: [server, image, policy, node,        │
 │   │                 slinky-slurm, mariadb-operator,     │
 │   │                 oke-legacy-plugin,                  │
+│   │                 default-storage-class,              │
+│   │                 percona-server-mongodb,             │
 │   │                 aks-gpu-pools (--aks-gpu-pools),    │
 │   │                 oke-addons (--oke-addons),          │
 │   │                 gke-gpu-pools (--gke-gpu-pools)]    │
@@ -657,7 +664,7 @@ spec:
   sources:
     # Helm chart from upstream
     - repoURL: https://helm.ngc.nvidia.com/nvidia
-      targetRevision: v26.7.1
+      targetRevision: v26.7.2
       chart: gpu-operator
       helm:
         valueFiles:

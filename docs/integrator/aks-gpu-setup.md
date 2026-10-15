@@ -10,10 +10,13 @@ Kubernetes 1.34. No AKS-specific feature flag is needed — DRA is enabled out o
 the box once you're on 1.34+.
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 # Create a cluster on 1.34
 az aks create \
-  --resource-group <rg> \
-  --name <cluster> \
+  --resource-group "${RESOURCE_GROUP}" \
+  --name "${CLUSTER}" \
   --kubernetes-version 1.34 \
   --enable-oidc-issuer \
   --enable-workload-identity \
@@ -22,8 +25,8 @@ az aks create \
 
 # Upgrade an existing cluster to 1.34
 az aks upgrade \
-  --resource-group <rg> \
-  --name <cluster> \
+  --resource-group "${RESOURCE_GROUP}" \
+  --name "${CLUSTER}" \
   --kubernetes-version 1.34
 ```
 
@@ -180,9 +183,12 @@ API object, so a snapshot cannot observe it from inside the cluster. To
 record it, dump the node pools and pass the file to `aicr snapshot`:
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 az aks nodepool list \
-  --cluster-name <cluster> \
-  --resource-group <rg> \
+  --cluster-name "${CLUSTER}" \
+  --resource-group "${RESOURCE_GROUP}" \
   -o json > pools.json
 
 aicr snapshot --aks-gpu-pools pools.json -o snapshot.yaml
@@ -202,8 +208,11 @@ before any cluster work.
 bundle takes the recipe):
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 # 1. Dump the node pools (the mode lives in the Azure control plane).
-az aks nodepool list -g <rg> --cluster-name <cluster> -o json > pools.json
+az aks nodepool list -g "${RESOURCE_GROUP}" --cluster-name "${CLUSTER}" -o json > pools.json
 
 # 2. Snapshot with the projection (agent Job or local mode).
 aicr snapshot --aks-gpu-pools pools.json -o snapshot.yaml
@@ -261,9 +270,12 @@ Create nodepools with the AKS **Driver only** install profile — the AKS
 default, so simply omit `--gpu-driver none`:
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 az aks nodepool add \
-  --cluster-name <cluster> \
-  --resource-group <rg> \
+  --cluster-name "${CLUSTER}" \
+  --resource-group "${RESOURCE_GROUP}" \
   --name gpupool \
   --node-vm-size Standard_ND96isr_H100_v5 \
   --node-count 1
@@ -508,13 +520,23 @@ override is accepted.
 
 **NVSentinel is configured by the profile.** Two silent NVSentinel
 misconfigurations are specific to `azure-managed`. The `gpuStack` profile now
-sets both values itself ([#2181](https://github.com/NVIDIA/aicr/issues/2181)),
-so no bundle-time override is needed under either profile value:
+sets them itself ([#2181](https://github.com/NVIDIA/aicr/issues/2181)), along
+with the values janitor's GPU reset Job needs, so no bundle-time override is
+needed under either profile value:
 
 | Path | `azure-managed` (default) | `operator-managed` |
 |---|---|---|
 | `nvsentinel.labeler.assumeDriverInstalled` | `true` | `false` |
 | `nvsentinel.metadata-collector.runtimeClassName` | `nvidia-container-runtime` | `nvidia` |
+| `nvsentinel.janitor.config.controllers.gpuReset.resetJob.runtimeClassName` | `nvidia-container-runtime` | `nvidia` |
+| `nvsentinel.janitor.config.controllers.gpuReset.resetJob.hostDriverRootPath` | `/` | `/run/nvidia/driver` |
+
+The last two rows matter only with the
+[`nvsentinel-remediation`](../user/component-catalog.md#graded-remediation)
+mixin, which deploys janitor. Its GPU reset Job requests the same RuntimeClass,
+and would otherwise be rejected at admission the same way, and it runs
+`nvidia-smi` by chrooting into the driver root: the host root where the node
+image installs the driver, the operator's install path where the operator does.
 
 Because these are profile-owned paths, a bundle-time `--set` diverging from the
 selected value is **rejected** rather than silently applied. The two gates
@@ -566,16 +588,19 @@ pod rejected: RuntimeClass "nvidia" not found
 No pod object is ever created, so there is nothing to `kubectl describe`; the
 `FailedCreate` event on the DaemonSet is the only signal.
 
-The same profile value owns both `gpu-operator.operator.runtimeClass` and
-`nvsentinel.metadata-collector.runtimeClassName`, so the two names are
-consistent by construction under either value.
-`CheckNVSentinelRuntimeClassCoherence` still compares the resolved names as a
-**blocking error** if they ever diverge.
+The same profile value owns `gpu-operator.operator.runtimeClass`,
+`nvsentinel.metadata-collector.runtimeClassName` and the GPU reset Job's
+`runtimeClassName` and driver root, so they are consistent by construction
+under either value. `CheckNVSentinelRuntimeClassCoherence` still compares the
+operator and metadata-collector names as a **blocking error** if they ever
+diverge, and `CheckNVSentinelRemediationPipelineCoherent` does the same for the
+reset Job.
 
 **Labeling the nodes by hand does not persist.** Applying the label manually:
 
 ```shell
-kubectl label node <node> nvsentinel.dgxc.nvidia.com/driver.installed=true
+NODE="my-gpu-node"  # replace with the GPU node name
+kubectl label node "${NODE}" nvsentinel.dgxc.nvidia.com/driver.installed=true
 ```
 
 takes effect immediately and then silently reverts — with no driver pod to
@@ -592,9 +617,12 @@ cadence), create nodepools with `--gpu-driver none` so AKS skips its driver
 installation:
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 az aks nodepool add \
-  --cluster-name <cluster> \
-  --resource-group <rg> \
+  --cluster-name "${CLUSTER}" \
+  --resource-group "${RESOURCE_GROUP}" \
   --name gpupool \
   --node-vm-size Standard_ND96isr_H100_v5 \
   --gpu-driver none \
@@ -613,8 +641,11 @@ rather than merging, so repeat every label the pool already carries or they are
 dropped — including the accelerated-node selector the bundle relies on:
 
 ```shell
+RESOURCE_GROUP="my-resource-group"  # replace with your Azure resource group
+CLUSTER="my-cluster"                # replace with your AKS cluster name
+
 az aks nodepool update \
-  --cluster-name <cluster> --resource-group <rg> --name gpupool \
+  --cluster-name "${CLUSTER}" --resource-group "${RESOURCE_GROUP}" --name gpupool \
   --labels nodeGroup=gpu-worker nvidia.com/dra-kubelet-plugin=true
 ```
 

@@ -187,7 +187,7 @@ Criteria fields (see `pkg/recipe/criteria.go` `type Criteria`):
 | `accelerator` | `CriteriaAcceleratorType` | `any` or empty | `h100`, `h200`, `gb200`, `gb300`, `b200`, `a100`, `l40`, `l40s`, `rtx-pro-6000`, `vr200` |
 | `intent` | `CriteriaIntentType` | `any` or empty | `training`, `inference` |
 | `os` | `CriteriaOSType` | `any` or empty | `ubuntu`, `rhel`, `cos`, `amazonlinux`, `ol`, `talos` |
-| `platform` | `CriteriaPlatformType` | `any` or empty | `dynamo`, `kubeflow`, `nim`, `runai`, `slurm` |
+| `platform` | `CriteriaPlatformType` | `any` or empty | `dynamo`, `kubeflow`, `kueue`, `nim`, `runai`, `slurm` |
 | `nodes` | int | `0` | any positive int |
 
 `--data` overlays may contribute additional values via the criteria
@@ -241,7 +241,7 @@ on a default-track version, is rejected. Profile-version metadata and recipe art
 so an unknown field cannot silently disappear.
 
 The core `ProfileValue` contract is closed to `advertiser`, `constraints`,
-`readinessConstraints`, and `componentRefs{name,overrides}`. It rejects `valuesFile`, component
+`readinessConstraints`, and `componentRefs{name,optional,overrides}`. It rejects `valuesFile`, component
 identity/deployment fields, root `overrides.enabled`, literal dotted keys,
 and nested empty maps. The `advertiser` field accepts exactly one non-empty
 value, `external` (validated against `pkg/allocpolicy`, the canonical
@@ -287,7 +287,13 @@ Resolution enforces these invariants:
 6. Stamp the result `aicr.run/v1beta2` and persist
    `metadata.selectedProfile`. Its sorted `ownedPaths` is the
    declaration-wide path union plus synthetic `enabled` for each referenced
-   component.
+   component, except a component every value references with
+   `optional: true`. An optional reference owns its override paths but not
+   presence, so the bundle may omit the component; its paths are locked
+   only when it ships. Optionality must agree across values, an optional
+   reference must assign at least one override, and #1327 descriptor
+   components cannot be optional (an advertisement-owning profile's
+   closure re-locks their presence).
 
 The shared raw-artifact gate checks version/profile coupling and hydrates
 profile-owned values. Bundle and mirror compare final candidate state with the
@@ -336,9 +342,12 @@ spec:
 ```
 
 Mixin files currently in the tree: `os-ubuntu`, `os-talos`,
-`platform-inference`, `platform-kubeflow`, `nvsentinel-observability`,
+`platform-inference`, `platform-kubeflow`, `gpu-operator-nvidia-driver-cr`,
+`nvsentinel-observability`,
 `nvsentinel-object-monitor`, `nvsentinel-nic-health-monitor`,
-`nvsentinel-preflight`, `nvsentinel-slurm-drain-monitor`, `npd`.
+`nvsentinel-preflight`, `nvsentinel-slurm-drain-monitor`, `nvsentinel-observe`,
+`nvsentinel-quarantine`, `nvsentinel-remediation`, `nvsentinel-slinky-drainer`,
+`npd`.
 
 **Mixin rules:**
 
@@ -367,7 +376,10 @@ Mixin files currently in the tree: `os-ubuntu`, `os-talos`,
   add that edge to an already-chained `nvsentinel`.
 - A mixin **introducing a genuinely new component** (one not already in
   the chain) may set those structural fields — that is how
-  `platform-kubeflow` and `platform-inference` add their components.
+  `platform-kubeflow` and `platform-inference` add their components,
+  and how the three NVSentinel remediation steps add `psmdb-operator`
+  and `nvsentinel-mongodb` (while adding an `nvsentinel-mongodb` edge to
+  the already-chained `nvsentinel` through `dependencyRefs`).
   The restriction above exists to stop a mixin silently redefining a
   component the chain already chose, so it only applies on collision.
   **One exception:** if that fresh component's registry entry declares a

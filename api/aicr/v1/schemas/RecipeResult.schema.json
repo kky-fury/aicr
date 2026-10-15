@@ -244,6 +244,7 @@
             "any",
             "dynamo",
             "kubeflow",
+            "kueue",
             "nim",
             "runai",
             "slurm"
@@ -319,6 +320,9 @@
             ]
           }
         },
+        "defaultStorageClassState": {
+          "type": "string"
+        },
         "excludedOverlays": {
           "type": "array",
           "items": {
@@ -340,6 +344,9 @@
           "type": "string"
         },
         "mariaDBOperatorState": {
+          "type": "string"
+        },
+        "perconaOperatorState": {
           "type": "string"
         },
         "selectedProfile": {

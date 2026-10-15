@@ -88,6 +88,32 @@ const (
 	MariaDBOperatorStateUnknown     = "unknown"
 )
 
+// DefaultStorageClassState values recorded in
+// RecipeResult.Metadata.DefaultStorageClassState by snapshot-driven
+// resolution of a recipe containing the nvsentinel-mongodb component.
+const (
+	DefaultStorageClassStatePresent  = "present"
+	DefaultStorageClassStateMultiple = "multiple"
+	DefaultStorageClassStateAbsent   = "absent"
+	DefaultStorageClassStateUnknown  = "unknown"
+)
+
+// PerconaOperatorState values recorded in
+// RecipeResult.Metadata.PerconaOperatorState by snapshot-driven resolution
+// of a recipe containing the nvsentinel-mongodb component.
+// PerconaOperatorStateAICROwned means the only PerconaServerMongoDB found is
+// AICR's own nvsentinel/nvsentinel-mongodb; PerconaOperatorStateOperatorDetected
+// means no foreign CR exists but a Percona operator pod AICR did not install
+// runs: outside the nvsentinel namespace, or there under another Helm release.
+const (
+	PerconaOperatorStateAbsent           = "absent"
+	PerconaOperatorStateAPIDetected      = "api-detected"
+	PerconaOperatorStateAICROwned        = "aicr-owned"
+	PerconaOperatorStateOperatorDetected = "operator-detected"
+	PerconaOperatorStateCRsDetected      = "crs-detected"
+	PerconaOperatorStateUnknown          = "unknown"
+)
+
 // ComponentType represents the type of component deployment.
 type ComponentType string
 
@@ -315,6 +341,36 @@ func (ref *ComponentRef) ApplyRegistryDefaults(config *ComponentConfig) {
 // relocation this function exists to prevent. A prior component absent from
 // the current recipe is never copied, so it is not validated.
 func ApplyInheritedIdentity(refs []ComponentRef, prior []ComponentRef) error {
+	return ApplyInheritedIdentityWithMode(refs, prior, InheritAll)
+}
+
+// InheritMode selects which deployment identity fields a prior artifact supplies.
+type InheritMode string
+
+const (
+	InheritAll       InheritMode = "all"
+	InheritNamespace InheritMode = "namespace"
+)
+
+// ParseInheritMode parses an explicit inheritance selection.
+func ParseInheritMode(value string) (InheritMode, error) {
+	mode := InheritMode(value)
+	switch mode {
+	case InheritAll, InheritNamespace:
+		return mode, nil
+	default:
+		return "", errors.New(errors.ErrCodeInvalidRequest,
+			fmt.Sprintf("invalid inherit mode %q: must be all or namespace", value))
+	}
+}
+
+// ApplyInheritedIdentityWithMode preserves the selected identity fields and
+// retargets health checks to inherited namespaces. Unselected fields stay as
+// resolved. An invalid inherited value leaves refs unmodified.
+func ApplyInheritedIdentityWithMode(refs []ComponentRef, prior []ComponentRef, mode InheritMode) error {
+	if _, err := ParseInheritMode(string(mode)); err != nil {
+		return err
+	}
 	if len(prior) == 0 {
 		return nil
 	}
@@ -323,6 +379,9 @@ func ApplyInheritedIdentity(refs []ComponentRef, prior []ComponentRef) error {
 	work := slices.Clone(refs)
 	pinned := make(map[string]ComponentRef, len(prior))
 	for _, p := range prior {
+		if mode == InheritNamespace {
+			p = ComponentRef{Name: p.Name, Namespace: p.Namespace}
+		}
 		pinned[p.Name] = p
 	}
 	for i := range work {
@@ -1165,6 +1224,18 @@ type RecipeResultMetadata struct {
 	// accounting. Consumed by the bundle-time
 	// CheckMariaDBOperatorOwnershipCoherence validation.
 	MariaDBOperatorState string `json:"mariaDBOperatorState,omitempty" yaml:"mariaDBOperatorState,omitempty"`
+
+	// DefaultStorageClassState records the snapshot's default StorageClass
+	// evidence for a recipe containing nvsentinel-mongodb, whose volumes
+	// name no class. Consumed by the bundle-time
+	// CheckNVSentinelDatastorePrerequisites validation.
+	DefaultStorageClassState string `json:"defaultStorageClassState,omitempty" yaml:"defaultStorageClassState,omitempty"`
+
+	// PerconaOperatorState records Percona Operator for MongoDB API, CR, and
+	// operator-pod conflict evidence for a recipe containing
+	// nvsentinel-mongodb. Consumed by the bundle-time
+	// CheckNVSentinelDatastorePrerequisites validation.
+	PerconaOperatorState string `json:"perconaOperatorState,omitempty" yaml:"perconaOperatorState,omitempty"`
 }
 
 // RecipeResult represents the final merged recipe output.
@@ -1379,6 +1450,8 @@ func (r *RecipeResult) DeepCopy() *RecipeResult {
 	out.Metadata.Version = r.Metadata.Version
 	out.Metadata.GPUDriverState = r.Metadata.GPUDriverState
 	out.Metadata.MariaDBOperatorState = r.Metadata.MariaDBOperatorState
+	out.Metadata.DefaultStorageClassState = r.Metadata.DefaultStorageClassState
+	out.Metadata.PerconaOperatorState = r.Metadata.PerconaOperatorState
 	if r.Metadata.SelectedProfile != nil {
 		selected := *r.Metadata.SelectedProfile
 		selected.OwnedPaths = cloneOwnedPaths(r.Metadata.SelectedProfile.OwnedPaths)

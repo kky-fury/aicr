@@ -253,7 +253,7 @@ type AgentConfig struct {
 //   - Accelerator: GPU model identifier (h100/h200/b200/gb200/a100/l40/l40s/rtx-pro-6000).
 //   - Intent: workload intent (training/inference).
 //   - OS: worker-node OS (ubuntu/rhel/cos/amazonlinux/talos/ol).
-//   - Platform: framework overlay (dynamo/kubeflow/nim/runai/slurm).
+//   - Platform: framework overlay (dynamo/kubeflow/kueue/nim/runai/slurm).
 //   - Nodes: worker-node count hint (0 = unspecified).
 //
 // Empty string is the "unspecified" sentinel for every field except Nodes,
@@ -365,7 +365,7 @@ type RecipeRequest struct {
 	// Platform is the workload platform overlay. Mapped to
 	// CriteriaPlatform. Supported values are defined by
 	// pkg/recipe.GetCriteriaPlatformTypes — today "", "any", "dynamo",
-	// "kubeflow", "nim".
+	// "kubeflow", "kueue", "nim", "runai", "slurm".
 	Platform string
 
 	// Profile is an optional name=value configuration profile selection.
@@ -378,10 +378,13 @@ type RecipeRequest struct {
 	AccountingMode string
 
 	// InheritFrom is a prior recipe file or bundle directory whose resolved
-	// namespace, chart, source, path, manifest files and pre-manifest files this
-	// resolution preserves. Empty means resolve from the registry alone. A cm://
-	// URI is rejected because it is not supported yet.
+	// identity this resolution preserves according to Inherit. Empty resolves
+	// from the registry alone. A cm:// URI is not supported yet.
 	InheritFrom string
+
+	// Inherit selects "all" or "namespace" from InheritFrom. Empty defaults
+	// to "all". An explicit selection requires InheritFrom.
+	Inherit string
 
 	// PinnedName reserves space for future pinned-recipe support.
 	// Currently rejected with ErrCodeUnavailable; set the criteria
@@ -406,6 +409,7 @@ type RecipeResolveOption func(*recipeResolveConfig)
 type recipeResolveConfig struct {
 	profile              string
 	inheritFrom          string
+	inheritMode          *recipe.InheritMode
 	accountingMode       *recipe.AccountingMode
 	runtimeInventoryMode *recipe.RuntimeInventoryMode
 	tcpxoInterfaces      *[]recipe.NetworkInterfaceMapping
@@ -440,9 +444,10 @@ func WithProfile(profile string) RecipeResolveOption {
 
 // WithInheritFrom names a prior recipe file or bundle directory whose resolved
 // namespace, chart, source, path, manifest files and pre-manifest files this
-// resolve keeps, so a moved registry default does not relocate or replace a
+// resolve keeps by default, so a moved registry default does not relocate or replace a
 // component that is already running. A component the prior artifact does not
-// name keeps its registry default. Empty resolves from the registry alone.
+// name keeps its registry default. WithInherit narrows the fields preserved.
+// Empty resolves from the registry alone.
 //
 // The reference is read when the resolve runs: a cm:// URI, an unreadable
 // path, or a directory holding no recipe is rejected with
@@ -450,6 +455,20 @@ func WithProfile(profile string) RecipeResolveOption {
 func WithInheritFrom(ref string) RecipeResolveOption {
 	return func(cfg *recipeResolveConfig) {
 		cfg.inheritFrom = ref
+	}
+}
+
+// WithInherit selects "all" or "namespace" from WithInheritFrom. Omitting
+// this option preserves all supported identity fields, including object names
+// from bundles. An explicit selection requires a nonempty inheritance source.
+func WithInherit(mode string) RecipeResolveOption {
+	return func(cfg *recipeResolveConfig) {
+		parsed, err := recipe.ParseInheritMode(mode)
+		if err != nil {
+			cfg.recordOptErr(err)
+			return
+		}
+		cfg.inheritMode = &parsed
 	}
 }
 
@@ -603,10 +622,11 @@ type SelectedProfile struct {
 
 	// OwnedPaths maps each locked component to its sorted dotted value
 	// paths, and is the union across every value of the declaration rather
-	// than only the selected one. Every listed component carries the
-	// synthetic "enabled" path recording that the profile owns its
-	// presence. Overriding any listed path is rejected at bundle time
-	// unless the override agrees with the selected value.
+	// than only the selected one. A listed component carries the synthetic
+	// "enabled" path when the profile owns its presence; a component the
+	// profile references as optional lists only its override paths and may
+	// be omitted from a bundle. Overriding any listed path is rejected at
+	// bundle time unless the override agrees with the selected value.
 	OwnedPaths map[string][]string
 }
 

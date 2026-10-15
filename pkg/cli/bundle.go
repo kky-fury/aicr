@@ -211,7 +211,7 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 		signingConfigPath: cmd.String(flagSigningConfig),
 		insecureTLS:       boolFlagOrConfig(cmd, flagInsecureTLS, bundleInput.InsecureTLS),
 		plainHTTP:         boolFlagOrConfig(cmd, flagPlainHTTP, bundleInput.PlainHTTP),
-		imageRefsPath:     stringFlagOrConfig(cmd, "image-refs", bundleInput.ImageRefsPath),
+		imageRefsPath:     stringFlagOrConfig(cmd, flagImageRefs, bundleInput.ImageRefsPath),
 	}
 
 	// Rekor v2 is the default for both keyless and KMS --attest signing: the
@@ -267,12 +267,10 @@ func parseBundleCmdOptions(cmd *cli.Command, cfg *aicr.Config) (*bundleCmdOption
 		}
 		// For OCI output, retain one absolute planned path from preflight
 		// through generation and publication.
-		opts.outputDir, err = filepath.Abs("./bundle")
+		opts.outputDir, err = ociBundleStagingPath()
 		if err != nil {
-			return nil, errors.Wrap(errors.ErrCodeInternal,
-				"failed to resolve OCI bundle output path", err)
+			return nil, err
 		}
-		opts.outputDir = filepath.Clean(opts.outputDir)
 		// Derive the Helm chart name from the OCI artifact path so the
 		// argocd-helm bundle's Chart.yaml and parent Application
 		// `source.chart` match what `helm push` actually publishes. Without
@@ -489,12 +487,18 @@ func validateTLogUpload(opts *bundleCmdOptions) error {
 				"requires --attest with --"+flagSigningKey+"; keyless OIDC signing needs "+
 				"Fulcio/Rekor network access")
 	}
-	if opts.rekorURL != "" {
+	return validateTLogOptOutTarget(opts.rekorURL, opts.signingConfigPath)
+}
+
+// validateTLogOptOutTarget rejects a transparency-log target alongside
+// --tlog-upload=false; see validateTLogUpload. Shared with evidence signing.
+func validateTLogOptOutTarget(rekorURL, signingConfigPath string) error {
+	if rekorURL != "" {
 		return errors.New(errors.ErrCodeInvalidRequest,
 			"--"+flagTLogUpload+"=false is mutually exclusive with --"+flagRekorURL+
 				": one skips the transparency log, the other selects a Rekor endpoint")
 	}
-	if opts.signingConfigPath != "" {
+	if signingConfigPath != "" {
 		return errors.New(errors.ErrCodeInvalidRequest,
 			"--"+flagTLogUpload+"=false is mutually exclusive with --"+flagSigningConfig+
 				": one skips the transparency log, the other selects a signing config")
@@ -545,13 +549,20 @@ func validateSigningKeyExclusivity(cmd *cli.Command, opts *bundleCmdOptions) err
 	// a YAML block-scalar config value) does not reach the KMS URI parser and
 	// fail late at sign time.
 	opts.signingKey = trimmed
+	return validateKeylessOnlyUnset(opts.identityToken, opts.oidcDeviceFlow, opts.fulcioURL)
+}
+
+// validateKeylessOnlyUnset rejects the keyless-only options that are
+// meaningless under KMS signing; see validateSigningKeyExclusivity. Shared with
+// evidence signing.
+func validateKeylessOnlyUnset(identityToken string, deviceFlow bool, fulcioURL string) error {
 	conflicts := []struct {
 		name   string
 		active bool
 	}{
-		{flagIdentityToken, opts.identityToken != ""},
-		{flagOIDCDeviceFlow, opts.oidcDeviceFlow},
-		{flagFulcioURL, opts.fulcioURL != ""},
+		{flagIdentityToken, identityToken != ""},
+		{flagOIDCDeviceFlow, deviceFlow},
+		{flagFulcioURL, fulcioURL != ""},
 	}
 	for _, c := range conflicts {
 		if c.active {
@@ -624,6 +635,33 @@ func resolveOutputTarget(cmd *cli.Command, input aicr.BundleInputOptions) (*oci.
 		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to resolve default output target", err)
 	}
 	return ref, nil
+}
+
+// ociBundleStagingPath returns the bundle directory under the working
+// directory, with symlinks in the working directory path resolved.
+func ociBundleStagingPath() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", errors.Wrap(errors.ErrCodeInternal,
+			"failed to resolve working directory for OCI bundle staging", err)
+	}
+	// Preflight rejects symlinked ancestors, and macOS /tmp and $TMPDIR are symlinks.
+	resolved, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		return "", errors.Wrap(errors.ErrCodeInternal,
+			"failed to resolve working directory symlinks for OCI bundle staging", err)
+	}
+	return filepath.Join(resolved, "bundle"), nil
+}
+
+// ociBundleStagingError wraps err with stagingDir, keeping err's error code,
+// or ErrCodeInternal if err has none.
+func ociBundleStagingError(stagingDir string, err error) error {
+	code := errors.ErrCodeInternal
+	if structured, ok := stderrors.AsType[*errors.StructuredError](err); ok {
+		code = structured.Code
+	}
+	return errors.Wrap(code, "cannot stage OCI bundle in "+stagingDir, err)
 }
 
 //nolint:funlen // bundle command is inherently large (flags + description + action)
@@ -820,7 +858,7 @@ Package with explicit tag (overrides CLI version):
 			},
 			&cli.StringFlag{
 				Name:     "workload-gate",
-				Usage:    "Taint for nodewright-operator runtime required (format: key=value:effect or key:effect). This is a day 2 option for cluster scaling operations.",
+				Usage:    "Taint for nodewright-operator runtime required (format: key=value:effect or key:effect; the key must have no DNS prefix and be at most 53 characters). This is a day 2 option for cluster scaling operations.",
 				Category: catScheduling,
 			},
 			&cli.StringSliceFlag{
@@ -996,7 +1034,7 @@ Package with explicit tag (overrides CLI version):
 				Category: catOCIRegistry,
 			},
 			&cli.StringFlag{
-				Name:     "image-refs",
+				Name:     flagImageRefs,
 				Usage:    "Path to file where the published image reference will be written (only used with OCI output)",
 				Category: catOCIRegistry,
 			},
@@ -1082,6 +1120,10 @@ func prepareBundlePublicationTargets(
 	}
 	preflightCtx, preflightCancel := context.WithTimeout(ctx, defaults.FileReadTimeout)
 	bundleTarget, err := deps.prepareBundleOutput(preflightCtx, opts.outputDir)
+	if err != nil {
+		// --output is a registry reference, so name the local path that failed.
+		err = ociBundleStagingError(opts.outputDir, err)
+	}
 	err = authoritativeFilesystemContextError(preflightCtx, "bundle output preflight canceled", err)
 	var imageRefs *imageRefsTarget
 	if err == nil && opts.imageRefsPath != "" {
@@ -1565,7 +1607,7 @@ func pushOCIBundleWithDependencies(
 		if err := imageRefs.validateTarget(publishCtx); err != nil {
 			return err
 		}
-		if err := imageRefs.validateBundleAliases(publishCtx); err != nil {
+		if err := imageRefs.validateGuardAliases(publishCtx); err != nil {
 			return err
 		}
 	}
@@ -1608,7 +1650,7 @@ func pushOCIBundleWithDependencies(
 		return err
 	}
 	if imageRefs != nil {
-		if err := imageRefs.validateBundleAliases(publishCtx); err != nil {
+		if err := imageRefs.validateGuardAliases(publishCtx); err != nil {
 			return err
 		}
 	}
@@ -1671,7 +1713,7 @@ func pushOCIBundleWithDependencies(
 		return err
 	}
 	if imageRefs != nil {
-		if err := imageRefs.validateBundleAliases(publishCtx); err != nil {
+		if err := imageRefs.validateGuardAliases(publishCtx); err != nil {
 			return err
 		}
 	}

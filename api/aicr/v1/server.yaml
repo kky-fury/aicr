@@ -966,7 +966,7 @@ components:
       description: Platform/framework type.
       schema:
         type: string
-        enum: [dynamo, kubeflow, nim, runai, slurm, any]
+        enum: [dynamo, kubeflow, kueue, nim, runai, slurm, any]
         default: any
     Nodes:
       name: nodes
@@ -1138,10 +1138,11 @@ components:
       required: false
       description: >
         Taint for nodewright-operator workload gating (format:
-        key=value:effect or key:effect).
+        key=value:effect or key:effect). The key must have no DNS prefix
+        (no `/`) and be at most 53 characters.
       schema:
         type: string
-      example: "skyhook.nvidia.com/runtime=required:NoSchedule"
+      example: "nodewright.nvidia.com=runtime-required:NoSchedule"
     WorkloadSelector:
       name: workload-selector
       in: query
@@ -1261,7 +1262,7 @@ components:
         platform:
           type: string
           description: Platform/framework type
-          enum: [dynamo, kubeflow, nim, runai, slurm, any]
+          enum: [dynamo, kubeflow, kueue, nim, runai, slurm, any]
           example: kubeflow
         nodes:
           type: integer
@@ -1413,7 +1414,10 @@ components:
                   type: object
                   description: >
                     Canonical component names mapped to sorted owned dotted
-                    paths. Every listed component includes synthetic "enabled".
+                    paths. A listed component includes synthetic "enabled"
+                    when the profile owns its presence; a component the
+                    profile references as optional lists only its override
+                    paths and may be omitted from a bundle.
                   additionalProperties:
                     type: array
                     items:
@@ -1427,6 +1431,24 @@ components:
                 bundling; API-only detection or omitted evidence produces a
                 non-blocking warning.
               enum: [absent, api-detected, crs-detected, unknown]
+            defaultStorageClassState:
+              type: string
+              description: >
+                Default StorageClass evidence recorded during snapshot-driven
+                resolution of a recipe containing nvsentinel-mongodb, whose
+                volumes name no StorageClass. "multiple" means more than one
+                StorageClass is annotated as the default.
+              enum: [present, multiple, absent, unknown]
+            perconaOperatorState:
+              type: string
+              description: >
+                Percona Operator for MongoDB conflict evidence recorded during
+                snapshot-driven resolution of a recipe containing
+                nvsentinel-mongodb. "aicr-owned" means the only
+                PerconaServerMongoDB found is AICR's own; "operator-detected"
+                means a Percona operator pod AICR did not install runs, with
+                no other PerconaServerMongoDB resources.
+              enum: [absent, api-detected, aicr-owned, operator-detected, crs-detected, unknown]
         criteria:
           $ref: "#/components/schemas/Criteria"
           description: Original criteria parameters
@@ -1733,11 +1755,19 @@ components:
                   - constraintWarnings
                   - gpuDriverState
                   - mariaDBOperatorState
+                  - defaultStorageClassState
+                  - perconaOperatorState
                   - selectedProfile
               properties:
                 mariaDBOperatorState:
                   type: string
                   enum: [absent, api-detected, crs-detected, unknown]
+                defaultStorageClassState:
+                  type: string
+                  enum: [present, multiple, absent, unknown]
+                perconaOperatorState:
+                  type: string
+                  enum: [absent, api-detected, aicr-owned, operator-detected, crs-detected, unknown]
                 excludedOverlays:
                   type: array
                   items:
@@ -1879,6 +1909,8 @@ components:
                       - constraintWarnings
                       - gpuDriverState
                       - mariaDBOperatorState
+                      - defaultStorageClassState
+                      - perconaOperatorState
                       - selectedProfile
                   not:
                     required: [selectedProfile]
@@ -1886,6 +1918,12 @@ components:
                     mariaDBOperatorState:
                       type: string
                       enum: [absent, api-detected, crs-detected, unknown]
+                    defaultStorageClassState:
+                      type: string
+                      enum: [present, multiple, absent, unknown]
+                    perconaOperatorState:
+                      type: string
+                      enum: [absent, api-detected, aicr-owned, operator-detected, crs-detected, unknown]
                     excludedOverlays:
                       type: array
                       items:
